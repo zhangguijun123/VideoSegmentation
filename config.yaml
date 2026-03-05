@@ -1,0 +1,69 @@
+video:
+  input_path: ""
+  output_dir: "output"
+  output_format: "mp4"
+  temp_dir: "temp"
+  transcode_input: true
+  transcode_format: "mp4"
+
+scene_detection:
+  method: "content"   # content | threshold | adaptive
+  threshold: 27.0
+  min_scene_length: 2.0
+  merge_min_length: 60.0  # 将短镜头合并到至少 30 秒，更接近完整对话段落
+
+speech_recognition:
+  model: "base"
+  language: "ja"
+keywords:
+  max_keywords_per_scene: 8
+  parts_of_speech: ["動詞"]
+  min_frequency: 1
+  stopwords_path: "data/stopwords_ja.txt"
+subtitle:
+  show_keywords: false
+  show_dialogue: false
+  position: "top_right"
+  font_size: 20
+  font_color: "white"
+  box_color: "black"
+  box_opacity: 0.45
+  margin: 20
+  line_spacing: 6
+  font_path: ""
+  dialogue_position: "bottom_center"
+  dialogue_font_size: 24
+  dialogue_font_color: "white"
+  dialogue_box_color: "black"
+  dialogue_box_opacity: 0.45
+  dialogue_margin: 28
+  dialogue_line_spacing: 8
+  dialogue_max_chars_per_line: 18
+  dialogue_max_lines: 2
+  logo_text: ""
+  logo_image_path: "logo.jpg"
+  logo_scale: 0.06
+  logo_max_width: 80
+
+
+
+
+
+  logo_position: "top_left"
+  logo_font_size: 24
+
+  logo_font_color: "white"
+  logo_box_color: "black"
+  logo_box_opacity: 0.45
+  logo_margin: 20
+
+  logo_font_path: ""
+  logo_max_chars_per_line: 0
+
+
+
+
+
+
+
+
