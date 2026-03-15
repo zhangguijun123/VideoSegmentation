@@ -310,7 +310,7 @@ def export_scene_with_keywords(
         if filters:
             cmd += ["-vf", ",".join(filters)]
 
-    cmd += ["-c:v", "libx264", "-preset", "fast", "-c:a", "aac", output_path]
+    cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k", output_path]
 
     run_ffmpeg(cmd)
 
