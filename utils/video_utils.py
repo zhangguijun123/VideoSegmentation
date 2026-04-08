@@ -11,9 +11,14 @@ def ensure_ffmpeg() -> None:
 
 def run_ffmpeg(args: List[str]) -> None:
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"] + args
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip())
+        # 尝试解码stderr，忽略错误
+        try:
+            err_text = result.stderr.decode('utf-8', errors='ignore')
+        except UnicodeDecodeError:
+            err_text = result.stderr.decode('latin-1', errors='ignore')
+        raise RuntimeError(err_text.strip())
 
 
 def normalize_input_video(

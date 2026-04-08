@@ -14,6 +14,9 @@ class SimpleLogger:
     def error(self, message: str) -> None:
         self._console.print(message, style="red")
 
+    def debug(self, message: str) -> None:
+        self._console.print(message, style="dim")
+
 
 def get_logger() -> SimpleLogger:
     return SimpleLogger()

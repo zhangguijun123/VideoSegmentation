@@ -1,5 +1,5 @@
 video:
-  input_path: ""
+  input_path: "temp/normalized_input.mp4"
   output_dir: "output"
   output_format: "mp4"
   temp_dir: "temp"
@@ -10,19 +10,20 @@ scene_detection:
   method: "content"   # content | threshold | adaptive
   threshold: 27.0
   min_scene_length: 2.0
-  merge_min_length: 60.0  # 将短镜头合并到至少 30 秒，更接近完整对话段落
+  merge_min_length: 120.0  # 将短镜头合并到至少 30 秒，更接近完整对话段落
 
 speech_recognition:
   model: "base"
   language: "ja"
+  auto_detect: true
 keywords:
   max_keywords_per_scene: 8
   parts_of_speech: ["動詞"]
   min_frequency: 1
   stopwords_path: "data/stopwords_ja.txt"
 subtitle:
-  show_keywords: false
-  show_dialogue: false
+  show_keywords: true
+  show_dialogue: true
   position: "top_right"
   font_size: 20
   font_color: "white"
@@ -39,11 +40,29 @@ subtitle:
   dialogue_margin: 28
   dialogue_line_spacing: 8
   dialogue_max_chars_per_line: 18
-  dialogue_max_lines: 2
+  dialogue_max_lines: 1
+  original_max_lines: 1
+  translation_max_lines: 1
+  dialogue_display_mode: "original_only"  # both | original_only | translation_only
+  keywords_position: "left_vertical"  # left_vertical | top_right | bottom_left | none
+  keywords_max_display: 10
+  keywords_box_enabled: false  # true = 显示背景框，false = 透明背景（无框）
+  keywords_font_color: "gold"  # 关键词字体颜色
+  keywords_font_outline_enabled: true  # 是否启用字体描边（透明背景时）
+  keywords_font_outline_color: "black@0.8"  # 描边颜色
+  keywords_font_outline_width: 2  # 描边宽度（像素）
+  keywords_font_shadow_enabled: true  # 是否启用阴影效果
+  keywords_font_shadow_x: 2  # 阴影X偏移
+  keywords_font_shadow_y: 2  # 阴影Y偏移
+  keywords_font_shadow_color: "black@0.6"  # 阴影颜色
+  japanese_font_path: ""
+  chinese_font_path: ""
   logo_text: ""
   logo_image_path: "logo.jpg"
-  logo_scale: 0.06
-  logo_max_width: 80
+  logo_scale: 0.04
+  logo_max_width: 60
+  logo_animation: "bounce_right"  # none | slide_right | slide_left | bounce_right
+  logo_animation_speed: 2.0  # 动画速度倍数（仅对bounce_right有效）
 
 
 
@@ -55,10 +74,26 @@ subtitle:
   logo_font_color: "white"
   logo_box_color: "black"
   logo_box_opacity: 0.45
-  logo_margin: 20
+  logo_margin: 10
 
   logo_font_path: ""
   logo_max_chars_per_line: 0
+
+
+
+
+
+
+
+
+
+
+translation:
+  enabled: true
+  target_language: "zh-CN"
+  show_original: true
+  translator: "googletrans"
+  api_timeout: 10
 
 
 
