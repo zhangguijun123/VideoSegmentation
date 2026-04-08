@@ -103,13 +103,16 @@ def run_pipeline(cfg: Dict[str, Any], input_path: str) -> None:
         original_text = transcript_result["text"]
         detected_language = transcript_result["detected_language"]
         language_prob = transcript_result.get("language_probability")
+        original_segments = transcript_result.get("segments", [])  # 原文分段信息
         
         logger.debug(f"场景 {scene_id}: 检测到语言 {detected_language} (概率: {language_prob})")
+        logger.debug(f"场景 {scene_id}: 原文分段数量: {len(original_segments)}")
 
         # 翻译处理
         display_text = original_text  # 默认显示原文（向后兼容）
         translation_used = False
         translated_text = None  # 译文，可能为空
+        translated_segments = None  # 译文分段信息，默认为None
         
         if trans_cfg.get("enabled", False) and original_text.strip():
             target_lang = trans_cfg.get("target_language", "zh-CN")
@@ -127,6 +130,9 @@ def run_pipeline(cfg: Dict[str, Any], input_path: str) -> None:
                 if translated_result and translated_result != original_text:
                     translation_used = True
                     translated_text = translated_result
+                    # 译文分段：目前使用与原文相同的时间戳，文本使用整个译文
+                    # 注意：这里简化处理，实际可能需要分段翻译
+                    translated_segments = None
                     # 保持向后兼容：如果show_original为True，则display_text包含原文和译文
                     if show_original:
                         display_text = f"{original_text}\n{translated_text}"
@@ -186,6 +192,8 @@ def run_pipeline(cfg: Dict[str, Any], input_path: str) -> None:
             subtitle_cfg=sub_cfg,
             dialogue_text=original_text,
             translated_text=translated_text,
+            segments=original_segments,
+            translated_segments=translated_segments,
         )
 
 

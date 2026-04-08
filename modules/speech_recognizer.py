@@ -24,6 +24,8 @@ def transcribe_scene(
     - text: 转录文本
     - detected_language: 检测到的语言代码（如 'ja', 'en'）
     - language_probability: 语言检测置信度（如果有）
+    - segments: 分段信息列表，每个元素包含 start, end, text
+      注意：时间戳已转换为相对于整个视频的绝对时间
     """
     audio_path = extract_audio_segment(
         input_path=input_path,
@@ -49,8 +51,23 @@ def transcribe_scene(
         if probs:
             language_probability = sum(probs) / len(probs)
     
+    # 转换时间戳：Whisper返回的时间是相对于音频文件开始（即场景开始）
+    # 我们需要将其转换为相对于整个视频的绝对时间
+    absolute_segments = []
+    for seg in segments:
+        seg_start = seg.get("start", 0)
+        seg_end = seg.get("end", 0)
+        seg_text = seg.get("text", "").strip()
+        if seg_text:  # 只保留有文本的segment
+            absolute_segments.append({
+                "start": start + seg_start,  # 转换为绝对时间
+                "end": start + seg_end,
+                "text": seg_text
+            })
+    
     return {
         "text": text,
         "detected_language": detected_language,
         "language_probability": language_probability,
+        "segments": absolute_segments,
     }

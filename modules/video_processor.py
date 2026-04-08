@@ -1,6 +1,7 @@
 import os
 from typing import List, Dict, Any, Optional
 
+from utils.logger import get_logger
 from utils.video_utils import run_ffmpeg
 from modules.keyword_extractor import filter_keywords_by_kanji_priority
 
@@ -554,6 +555,8 @@ def export_scene_with_keywords(
     subtitle_cfg: Dict[str, Any],
     dialogue_text: str,
     translated_text: Optional[str] = None,
+    segments: Optional[List[Dict[str, Any]]] = None,
+    translated_segments: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """
     导出带关键词和双语字幕的视频场景
@@ -565,29 +568,98 @@ def export_scene_with_keywords(
         output_path: 输出视频路径
         keywords: 关键词列表
         subtitle_cfg: 字幕配置
-        dialogue_text: 原文对话文本
-        translated_text: 译文对话文本（可选）
+        dialogue_text: 原文对话文本（向后兼容）
+        translated_text: 译文对话文本（可选，向后兼容）
+        segments: 原文分段列表，每个元素包含 start, end, text
+                  start和end是相对于整个视频的绝对时间
+        translated_segments: 译文分段列表，每个元素包含 start, end, text
     """
     # 构建关键词滤镜
+    logger = get_logger()
     drawtext = build_drawtext_filter(keywords, subtitle_cfg)
     
-    # 构建双语字幕滤镜
-    original_filter = build_original_text_filter(dialogue_text, subtitle_cfg)
+    filters = []
     
-    # 根据是否有译文决定如何构建译文滤镜
-    if translated_text:
-        translation_filter = build_translation_text_filter(translated_text, subtitle_cfg)
+    # 调试信息：输出分段信息
+    logger.debug(f"字幕分段模式: segments={segments}, translated_segments={translated_segments}")
+    
+    # 判断是否使用分段模式
+    use_segmented_mode = segments is not None and len(segments) > 0
+    logger.debug(f"分段模式启用: {use_segmented_mode}, 分段数量: {len(segments) if segments else 0}")
+    
+    if use_segmented_mode:
+        # 分段模式：为每个分段构建带时间控制的字幕滤镜
+        for i, seg in enumerate(segments):
+            seg_start = seg.get("start", 0)
+            seg_end = seg.get("end", 0)
+            seg_text = seg.get("text", "").strip()
+            
+            if not seg_text:
+                continue
+            
+            # 将绝对时间转换为相对于场景开始的时间
+            # 因为FFmpeg命令使用了-ss start，所以时间轴从0开始
+            rel_start = seg_start - start
+            rel_end = seg_end - start
+            
+            # 确保时间在场景范围内且有效
+            if rel_start < 0:
+                rel_start = 0
+            if rel_end > (end - start):
+                rel_end = end - start
+            if rel_start >= rel_end:
+                continue
+            
+            logger.debug(f"分段 {i}: 绝对时间 [{seg_start:.2f}-{seg_end:.2f}], 相对时间 [{rel_start:.2f}-{rel_end:.2f}], 文本: {seg_text[:50]}{'...' if len(seg_text) > 50 else ''}")
+            
+            # 构建原文字幕滤镜
+            original_filter = build_timed_original_filter(seg_text, rel_start, rel_end, subtitle_cfg)
+            if original_filter:
+                filters.append(original_filter)
+            
+            # 构建译文字幕滤镜（如果有对应的译文分段）
+            if translated_segments and i < len(translated_segments):
+                trans_seg = translated_segments[i]
+                trans_text = trans_seg.get("text", "").strip()
+                if trans_text:
+                    # 使用相同的时间范围
+                    translation_filter = build_timed_translation_filter(trans_text, rel_start, rel_end, subtitle_cfg)
+                    if translation_filter:
+                        filters.append(translation_filter)
+            elif translated_text:
+                # 向后兼容：如果没有译文分段但有整个译文文本，使用整个译文
+                # 注意：这会将整个译文用于所有分段，可能不是最佳效果
+                translation_filter = build_timed_translation_filter(translated_text, rel_start, rel_end, subtitle_cfg)
+                if translation_filter:
+                    filters.append(translation_filter)
     else:
-        # 如果没有译文，根据显示模式决定是否显示原文
-        # 如果显示模式是 translation_only，则不显示任何字幕
-        display_mode = subtitle_cfg.get("dialogue_display_mode", "both")
-        if display_mode == "translation_only":
-            original_filter = ""
-        # 否则使用旧的单语字幕滤镜作为回退
-        translation_filter = ""
-        # 如果原文滤镜为空，则使用旧的字幕滤镜
-        if not original_filter:
-            original_filter = build_dialogue_filter(dialogue_text, subtitle_cfg)
+        # 向后兼容：旧模式，整个场景显示相同的字幕
+        # 构建双语字幕滤镜
+        original_filter = build_original_text_filter(dialogue_text, subtitle_cfg)
+        
+        # 根据是否有译文决定如何构建译文滤镜
+        if translated_text:
+            translation_filter = build_translation_text_filter(translated_text, subtitle_cfg)
+        else:
+            # 如果没有译文，根据显示模式决定是否显示原文
+            # 如果显示模式是 translation_only，则不显示任何字幕
+            display_mode = subtitle_cfg.get("dialogue_display_mode", "both")
+            if display_mode == "translation_only":
+                original_filter = ""
+            # 否则使用旧的单语字幕滤镜作为回退
+            translation_filter = ""
+            # 如果原文滤镜为空，则使用旧的字幕滤镜
+            if not original_filter:
+                original_filter = build_dialogue_filter(dialogue_text, subtitle_cfg)
+        
+        if original_filter:
+            filters.append(original_filter)
+        if translation_filter:
+            filters.append(translation_filter)
+    
+    # 添加关键词滤镜
+    if drawtext:
+        filters.append(drawtext)
     
     logo_drawtext = build_logo_filter(subtitle_cfg)
     logo_image_path = resolve_logo_image_path(subtitle_cfg)
@@ -601,14 +673,6 @@ def export_scene_with_keywords(
         "-i",
         input_path,
     ]
-
-    filters = []
-    if drawtext:
-        filters.append(drawtext)
-    if original_filter:
-        filters.append(original_filter)
-    if translation_filter:
-        filters.append(translation_filter)
 
     if logo_image_path:
         cmd += ["-i", logo_image_path]
@@ -743,6 +807,110 @@ def export_scene_with_keywords(
     cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k", output_path]
 
     run_ffmpeg(cmd)
+
+
+def build_timed_original_filter(segment_text: str, start_time: float, end_time: float, subtitle_cfg: Dict[str, Any]) -> str:
+    """
+    构建带时间控制的原文字幕滤镜
+    start_time和end_time是相对于场景开始的时间（秒）
+    """
+    if not segment_text:
+        return ""
+    
+    # 根据显示模式决定是否显示原文
+    display_mode = subtitle_cfg.get("dialogue_display_mode", "both")
+    if display_mode not in ["both", "original_only"]:
+        return ""
+    
+    # 文本换行处理
+    max_chars = subtitle_cfg.get("dialogue_max_chars_per_line", 18)
+    max_lines = subtitle_cfg.get("original_max_lines", subtitle_cfg.get("dialogue_max_lines", 1))
+    text_raw = wrap_dialogue_text(segment_text, max_chars, max_lines)
+    if not text_raw:
+        return ""
+    
+    text = escape_drawtext_keep_newlines(text_raw)
+    
+    # 样式配置
+    font_color = subtitle_cfg.get("dialogue_font_color", subtitle_cfg.get("font_color", "white"))
+    font_size = subtitle_cfg.get("dialogue_font_size", subtitle_cfg.get("font_size", 24))
+    box_color = subtitle_cfg.get("dialogue_box_color", subtitle_cfg.get("box_color", "black"))
+    box_opacity = subtitle_cfg.get("dialogue_box_opacity", subtitle_cfg.get("box_opacity", 0.45))
+    line_spacing = subtitle_cfg.get("dialogue_line_spacing", subtitle_cfg.get("line_spacing", 6))
+    font_path = resolve_japanese_font_path(subtitle_cfg)  # 使用日文字体
+    
+    # 获取位置
+    original_pos, _ = resolve_bilingual_position(subtitle_cfg)
+    
+    # 构建enable表达式
+    enable_expr = f"enable='between(t,{start_time},{end_time})'"
+    
+    parts = [
+        "drawtext=",
+    ]
+    
+    if font_path:
+        parts.append(f"fontfile='{escape_drawtext(font_path)}':")
+    
+    parts.append(
+        f"text='{text}':fontcolor={font_color}:fontsize={font_size}:"
+        f"box=1:boxcolor={box_color}@{box_opacity}:boxborderw=10:"
+        f"line_spacing={line_spacing}:{original_pos}:{enable_expr}"
+    )
+    
+    return "".join(parts)
+
+
+def build_timed_translation_filter(segment_text: str, start_time: float, end_time: float, subtitle_cfg: Dict[str, Any]) -> str:
+    """
+    构建带时间控制的译文字幕滤镜
+    start_time和end_time是相对于场景开始的时间（秒）
+    """
+    if not segment_text:
+        return ""
+    
+    # 根据显示模式决定是否显示译文
+    display_mode = subtitle_cfg.get("dialogue_display_mode", "both")
+    if display_mode not in ["both", "translation_only"]:
+        return ""
+    
+    # 文本换行处理
+    max_chars = subtitle_cfg.get("dialogue_max_chars_per_line", 18)
+    max_lines = subtitle_cfg.get("translation_max_lines", subtitle_cfg.get("dialogue_max_lines", 1))
+    text_raw = wrap_dialogue_text(segment_text, max_chars, max_lines)
+    if not text_raw:
+        return ""
+    
+    text = escape_drawtext_keep_newlines(text_raw)
+    
+    # 样式配置
+    font_color = subtitle_cfg.get("dialogue_font_color", subtitle_cfg.get("font_color", "white"))
+    font_size = subtitle_cfg.get("dialogue_font_size", subtitle_cfg.get("font_size", 24))
+    box_color = subtitle_cfg.get("dialogue_box_color", subtitle_cfg.get("box_color", "black"))
+    box_opacity = subtitle_cfg.get("dialogue_box_opacity", subtitle_cfg.get("box_opacity", 0.45))
+    line_spacing = subtitle_cfg.get("dialogue_line_spacing", subtitle_cfg.get("line_spacing", 6))
+    font_path = resolve_chinese_font_path(subtitle_cfg)  # 使用中文字体
+    
+    # 获取位置
+    _, translation_pos = resolve_bilingual_position(subtitle_cfg)
+    
+    # 构建enable表达式
+    enable_expr = f"enable='between(t,{start_time},{end_time})'"
+    
+    parts = [
+        "drawtext=",
+    ]
+    
+    if font_path:
+        parts.append(f"fontfile='{escape_drawtext(font_path)}':")
+    
+    parts.append(
+        f"text='{text}':fontcolor={font_color}:fontsize={font_size}:"
+        f"box=1:boxcolor={box_color}@{box_opacity}:boxborderw=10:"
+        f"line_spacing={line_spacing}:{translation_pos}:{enable_expr}"
+    )
+    
+    return "".join(parts)
 
 
 
