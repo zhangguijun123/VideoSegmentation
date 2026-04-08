@@ -1,7 +1,8 @@
 import os
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from utils.video_utils import run_ffmpeg
+from modules.keyword_extractor import filter_keywords_by_kanji_priority
 
 
 def escape_drawtext(text: str) -> str:
@@ -14,10 +15,13 @@ def escape_drawtext(text: str) -> str:
 
 
 def escape_drawtext_keep_newlines(text: str) -> str:
-    placeholder = "__NL__"
+    # 先将换行符替换为特殊标记，避免被escape_drawtext处理
+    placeholder = "___NEWLINE___"
     text = text.replace("\n", placeholder)
     text = escape_drawtext(text)
-    return text.replace(placeholder, "\\\\n")
+    # 将标记替换为实际的换行字符（ASCII 10）
+    # 这样FFmpeg会直接接收换行符
+    return text.replace(placeholder, "\n")
 
 
 
@@ -40,6 +44,122 @@ def resolve_font_path(subtitle_cfg: Dict[str, Any]) -> str:
 
     return ""
 
+
+def resolve_logo_image_path(subtitle_cfg: Dict[str, Any]) -> str:
+    logo_image_path = subtitle_cfg.get("logo_image_path", "")
+    if not logo_image_path:
+        return ""
+
+    if os.path.isabs(logo_image_path):
+        return logo_image_path if os.path.exists(logo_image_path) else ""
+
+    candidate = os.path.join(os.getcwd(), logo_image_path)
+    return candidate if os.path.exists(candidate) else ""
+
+
+def resolve_japanese_font_path(subtitle_cfg: Dict[str, Any]) -> str:
+    """
+    解析日文字体路径
+    优先使用配置中的japanese_font_path，否则检查常见日文字体
+    """
+    font_path = subtitle_cfg.get("japanese_font_path", "")
+    if font_path:
+        return font_path
+    
+    # 常见日文字体候选
+    candidates = [
+        r"C:\\Windows\\Fonts\\meiryo.ttc",
+        r"C:\\Windows\\Fonts\\msgothic.ttc",
+        r"C:\\Windows\\Fonts\\YuGothM.ttc",
+        r"C:\\Windows\\Fonts\\YuMincho.ttc",
+        r"C:\\Windows\\Fonts\\MSMINCHO.TTF",
+        r"C:\\Windows\\Fonts\\MSGOTHIC.TTC",
+    ]
+    
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    
+    # 回退到通用字体路径
+    return resolve_font_path(subtitle_cfg)
+
+def resolve_chinese_font_path(subtitle_cfg: Dict[str, Any]) -> str:
+    """
+    解析中文字体路径
+    优先使用配置中的chinese_font_path，否则检查常见中文字体
+    """
+    font_path = subtitle_cfg.get("chinese_font_path", "")
+    if font_path:
+        return font_path
+    
+    # 常见中文字体候选
+    candidates = [
+        r"C:\\Windows\\Fonts\\msyh.ttc",           # 微软雅黑
+        r"C:\\Windows\\Fonts\\simhei.ttf",         # 黑体
+        r"C:\\Windows\\Fonts\\simsun.ttc",         # 宋体
+        r"C:\\Windows\\Fonts\\simkai.ttf",         # 楷体
+        r"C:\\Windows\\Fonts\\simfang.ttf",        # 仿宋
+        r"C:\\Windows\\Fonts\\Deng.ttf",           # 等线
+        r"C:\\Windows\\Fonts\\Dengb.ttf",          # 等线 Bold
+    ]
+    
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    
+    # 回退到通用字体路径
+    return resolve_font_path(subtitle_cfg)
+
+
+def resolve_keywords_position(subtitle_cfg: Dict[str, Any]) -> str:
+    """
+    解析关键词显示位置，支持垂直左侧布局
+    如果logo位于左上角，关键词将显示在logo下方
+    """
+    position = subtitle_cfg.get("keywords_position", "left_vertical")
+    margin = subtitle_cfg.get("margin", 20)
+    
+    # 计算logo影响的高度
+    logo_y_offset = 0
+    logo_position = subtitle_cfg.get("logo_position", "top_left")
+    logo_image_path = resolve_logo_image_path(subtitle_cfg)
+    
+    if logo_image_path and logo_position == "top_left":
+        # 估算logo高度
+        logo_max_width = subtitle_cfg.get("logo_max_width", 60)
+        logo_scale = subtitle_cfg.get("logo_scale", 0.04)
+        logo_width = subtitle_cfg.get("logo_width", 180)
+        
+        # 优先使用logo_max_width作为logo宽度
+        logo_w = logo_max_width if logo_max_width > 0 else logo_width
+        # 假设logo为正方形，高度等于宽度
+        estimated_logo_height = logo_w
+        # 加上logo_margin
+        logo_margin = subtitle_cfg.get("logo_margin", margin)
+        logo_y_offset = logo_margin + estimated_logo_height + 10  # 10像素间距
+    
+    if position == "left_vertical":
+        # 左侧垂直排列，从顶部开始，考虑logo偏移
+        y = margin + logo_y_offset
+        return f"x={margin}:y={y}"
+    elif position == "top_right":
+        return f"x=w-tw-{margin}:y={margin}"
+    elif position == "top_left":
+        # 左上角位置，也考虑logo偏移
+        y = margin + logo_y_offset
+        return f"x={margin}:y={y}"
+    elif position == "top_center":
+        return f"x=(w-tw)/2:y={margin}"
+    elif position == "bottom_left":
+        return f"x={margin}:y=h-th-{margin}"
+    elif position == "bottom_center":
+        return f"x=(w-tw)/2:y=h-th-{margin}"
+    elif position == "none":
+        return ""  # 空字符串表示不显示
+    else:
+        # 默认使用左侧垂直布局
+        y = margin + logo_y_offset
+        return f"x={margin}:y={y}"
 
 def resolve_position(subtitle_cfg: Dict[str, Any]) -> str:
     position = subtitle_cfg.get("position", "bottom_right")
@@ -74,18 +194,14 @@ def resolve_overlay_position(position: str, margin: int) -> str:
     return f"main_w-overlay_w-{margin}:main_h-overlay_h-{margin}"
 
 
-def resolve_logo_image_path(subtitle_cfg: Dict[str, Any]) -> str:
-    logo_image_path = subtitle_cfg.get("logo_image_path", "")
-    if not logo_image_path:
-        return ""
-
-    if os.path.isabs(logo_image_path):
-        return logo_image_path if os.path.exists(logo_image_path) else ""
-
-    candidate = os.path.join(os.getcwd(), logo_image_path)
-    return candidate if os.path.exists(candidate) else ""
-
-
+def parse_overlay_position(position_str: str) -> tuple[str, str]:
+    """
+    解析overlay位置字符串，返回(x_expr, y_expr)元组
+    """
+    if ":" in position_str:
+        x_expr, y_expr = position_str.split(":", 1)
+        return x_expr.strip(), y_expr.strip()
+    return "0", "0"
 
 
 def build_drawtext_filter(keywords: List[str], subtitle_cfg: Dict[str, Any]) -> str:
@@ -95,18 +211,43 @@ def build_drawtext_filter(keywords: List[str], subtitle_cfg: Dict[str, Any]) -> 
     if not keywords:
         return ""
 
-    text_raw = "\n".join(keywords)
+    # 检查关键词位置配置，如果为"none"则不显示
+    keywords_position = subtitle_cfg.get("keywords_position", "left_vertical")
+    if keywords_position == "none":
+        return ""
+
+    # 应用汉字优先级筛选和数量限制
+    max_display = subtitle_cfg.get("keywords_max_display", 10)
+    filtered_keywords = filter_keywords_by_kanji_priority(keywords, max_display)
+    
+    if not filtered_keywords:
+        return ""
+
+    text_raw = "\n".join(filtered_keywords)
     text = escape_drawtext_keep_newlines(text_raw)
 
-
-
-    font_color = subtitle_cfg.get("font_color", "white")
+    # 获取字体颜色，优先使用关键词专用颜色配置
+    font_color = subtitle_cfg.get("keywords_font_color", subtitle_cfg.get("font_color", "white"))
     font_size = subtitle_cfg.get("font_size", 36)
     box_color = subtitle_cfg.get("box_color", "black")
     box_opacity = subtitle_cfg.get("box_opacity", 0.45)
     line_spacing = subtitle_cfg.get("line_spacing", 6)
-    font_path = resolve_font_path(subtitle_cfg)
-    position_expr = resolve_position(subtitle_cfg)
+    font_path = resolve_font_path(subtitle_cfg)  # 使用通用字体路径，关键词用日文字体
+    position_expr = resolve_keywords_position(subtitle_cfg)
+    keywords_box_enabled = subtitle_cfg.get("keywords_box_enabled", False)  # 默认禁用背景框
+    
+    # 字体效果配置
+    outline_enabled = subtitle_cfg.get("keywords_font_outline_enabled", True)
+    outline_color = subtitle_cfg.get("keywords_font_outline_color", "black@0.8")
+    outline_width = subtitle_cfg.get("keywords_font_outline_width", 2)
+    shadow_enabled = subtitle_cfg.get("keywords_font_shadow_enabled", True)
+    shadow_x = subtitle_cfg.get("keywords_font_shadow_x", 2)
+    shadow_y = subtitle_cfg.get("keywords_font_shadow_y", 2)
+    shadow_color = subtitle_cfg.get("keywords_font_shadow_color", "black@0.6")
+    
+    # 如果位置表达式为空（例如配置为"none"），则不显示
+    if not position_expr:
+        return ""
 
     parts = [
         "drawtext=",
@@ -115,11 +256,27 @@ def build_drawtext_filter(keywords: List[str], subtitle_cfg: Dict[str, Any]) -> 
     if font_path:
         parts.append(f"fontfile='{escape_drawtext(font_path)}':")
 
-    parts.append(
+    # 构建滤镜参数
+    filter_parts = [
         f"text='{text}':fontcolor={font_color}:fontsize={font_size}:"
-        f"box=1:boxcolor={box_color}@{box_opacity}:boxborderw=10:"
-        f"line_spacing={line_spacing}:{position_expr}"
-    )
+    ]
+    
+    if keywords_box_enabled:
+        # 启用背景框
+        filter_parts.append(f"box=1:boxcolor={box_color}@{box_opacity}:boxborderw=10:")
+    else:
+        # 透明背景，根据配置添加描边和阴影
+        filter_parts.append(f"box=0:")
+        
+        if outline_enabled:
+            filter_parts.append(f"bordercolor={outline_color}:borderw={outline_width}:")
+        
+        if shadow_enabled:
+            filter_parts.append(f"shadowx={shadow_x}:shadowy={shadow_y}:shadowcolor={shadow_color}:")
+    
+    filter_parts.append(f"line_spacing={line_spacing}:{position_expr}")
+    
+    parts.append("".join(filter_parts))
 
     return "".join(parts)
 
@@ -245,6 +402,148 @@ def build_dialogue_filter(dialogue_text: str, subtitle_cfg: Dict[str, Any]) -> s
 
     return "".join(parts)
 
+def resolve_bilingual_position(subtitle_cfg: Dict[str, Any]) -> tuple[str, str]:
+    """
+    返回双语字幕的位置表达式：(original_position, translation_position)
+    原文在上，译文在下，垂直堆叠
+    """
+    dialogue_position = subtitle_cfg.get("dialogue_position", "bottom_center")
+    dialogue_margin = subtitle_cfg.get("dialogue_margin", subtitle_cfg.get("margin", 20))
+    
+    # 计算基线位置（译文的位置）
+    if dialogue_position == "bottom_center":
+        base_x = f"(w-tw)/2"
+        base_y = f"h-th-{dialogue_margin}"
+    elif dialogue_position == "bottom_left":
+        base_x = f"{dialogue_margin}"
+        base_y = f"h-th-{dialogue_margin}"
+    elif dialogue_position == "bottom_right":
+        base_x = f"w-tw-{dialogue_margin}"
+        base_y = f"h-th-{dialogue_margin}"
+    elif dialogue_position == "top_center":
+        base_x = f"(w-tw)/2"
+        base_y = f"{dialogue_margin}"
+    elif dialogue_position == "top_left":
+        base_x = f"{dialogue_margin}"
+        base_y = f"{dialogue_margin}"
+    elif dialogue_position == "top_right":
+        base_x = f"w-tw-{dialogue_margin}"
+        base_y = f"{dialogue_margin}"
+    else:
+        # 默认底部居中
+        base_x = f"(w-tw)/2"
+        base_y = f"h-th-{dialogue_margin}"
+    
+    # 原文在译文上方，需要知道译文文本高度
+    # 由于无法预先知道译文高度，我们使用估计值：字体大小 + 行间距
+    font_size = subtitle_cfg.get("dialogue_font_size", subtitle_cfg.get("font_size", 24))
+    line_spacing = subtitle_cfg.get("dialogue_line_spacing", subtitle_cfg.get("line_spacing", 6))
+    # 估计行高：字体大小 + 行间距
+    line_height = font_size + line_spacing
+    
+    # 原文位置：在译文上方一个行高处
+    # 注意：th是文本高度，但每个文本不同。我们使用固定偏移量
+    # 使用表达式：y = base_y - line_height
+    original_y = f"({base_y})-{line_height}"
+    
+    original_pos = f"x={base_x}:y={original_y}"
+    translation_pos = f"x={base_x}:y={base_y}"
+    
+    return original_pos, translation_pos
+
+def build_original_text_filter(original_text: str, subtitle_cfg: Dict[str, Any]) -> str:
+    """
+    构建原文（日文）字幕滤镜
+    """
+    if not original_text:
+        return ""
+    
+    # 根据显示模式决定是否显示原文
+    display_mode = subtitle_cfg.get("dialogue_display_mode", "both")
+    if display_mode not in ["both", "original_only"]:
+        return ""
+    
+    # 文本换行处理
+    max_chars = subtitle_cfg.get("dialogue_max_chars_per_line", 18)
+    max_lines = subtitle_cfg.get("original_max_lines", subtitle_cfg.get("dialogue_max_lines", 1))
+    text_raw = wrap_dialogue_text(original_text, max_chars, max_lines)
+    if not text_raw:
+        return ""
+    
+    text = escape_drawtext_keep_newlines(text_raw)
+    
+    # 样式配置
+    font_color = subtitle_cfg.get("dialogue_font_color", subtitle_cfg.get("font_color", "white"))
+    font_size = subtitle_cfg.get("dialogue_font_size", subtitle_cfg.get("font_size", 24))
+    box_color = subtitle_cfg.get("dialogue_box_color", subtitle_cfg.get("box_color", "black"))
+    box_opacity = subtitle_cfg.get("dialogue_box_opacity", subtitle_cfg.get("box_opacity", 0.45))
+    line_spacing = subtitle_cfg.get("dialogue_line_spacing", subtitle_cfg.get("line_spacing", 6))
+    font_path = resolve_japanese_font_path(subtitle_cfg)  # 使用日文字体
+    
+    # 获取位置
+    original_pos, _ = resolve_bilingual_position(subtitle_cfg)
+    
+    parts = [
+        "drawtext=",
+    ]
+    
+    if font_path:
+        parts.append(f"fontfile='{escape_drawtext(font_path)}':")
+    
+    parts.append(
+        f"text='{text}':fontcolor={font_color}:fontsize={font_size}:"
+        f"box=1:boxcolor={box_color}@{box_opacity}:boxborderw=10:"
+        f"line_spacing={line_spacing}:{original_pos}"
+    )
+    
+    return "".join(parts)
+
+def build_translation_text_filter(translation_text: str, subtitle_cfg: Dict[str, Any]) -> str:
+    """
+    构建译文（中文）字幕滤镜
+    """
+    if not translation_text:
+        return ""
+    
+    # 根据显示模式决定是否显示译文
+    display_mode = subtitle_cfg.get("dialogue_display_mode", "both")
+    if display_mode not in ["both", "translation_only"]:
+        return ""
+    
+    # 文本换行处理
+    max_chars = subtitle_cfg.get("dialogue_max_chars_per_line", 18)
+    max_lines = subtitle_cfg.get("translation_max_lines", subtitle_cfg.get("dialogue_max_lines", 1))
+    text_raw = wrap_dialogue_text(translation_text, max_chars, max_lines)
+    if not text_raw:
+        return ""
+    
+    text = escape_drawtext_keep_newlines(text_raw)
+    
+    # 样式配置
+    font_color = subtitle_cfg.get("dialogue_font_color", subtitle_cfg.get("font_color", "white"))
+    font_size = subtitle_cfg.get("dialogue_font_size", subtitle_cfg.get("font_size", 24))
+    box_color = subtitle_cfg.get("dialogue_box_color", subtitle_cfg.get("box_color", "black"))
+    box_opacity = subtitle_cfg.get("dialogue_box_opacity", subtitle_cfg.get("box_opacity", 0.45))
+    line_spacing = subtitle_cfg.get("dialogue_line_spacing", subtitle_cfg.get("line_spacing", 6))
+    font_path = resolve_chinese_font_path(subtitle_cfg)  # 使用中文字体
+    
+    # 获取位置
+    _, translation_pos = resolve_bilingual_position(subtitle_cfg)
+    
+    parts = [
+        "drawtext=",
+    ]
+    
+    if font_path:
+        parts.append(f"fontfile='{escape_drawtext(font_path)}':")
+    
+    parts.append(
+        f"text='{text}':fontcolor={font_color}:fontsize={font_size}:"
+        f"box=1:boxcolor={box_color}@{box_opacity}:boxborderw=10:"
+        f"line_spacing={line_spacing}:{translation_pos}"
+    )
+    
+    return "".join(parts)
 
 def export_scene_with_keywords(
     input_path: str,
@@ -254,9 +553,42 @@ def export_scene_with_keywords(
     keywords: List[str],
     subtitle_cfg: Dict[str, Any],
     dialogue_text: str,
+    translated_text: Optional[str] = None,
 ) -> None:
+    """
+    导出带关键词和双语字幕的视频场景
+    
+    Args:
+        input_path: 输入视频路径
+        start: 开始时间（秒）
+        end: 结束时间（秒）
+        output_path: 输出视频路径
+        keywords: 关键词列表
+        subtitle_cfg: 字幕配置
+        dialogue_text: 原文对话文本
+        translated_text: 译文对话文本（可选）
+    """
+    # 构建关键词滤镜
     drawtext = build_drawtext_filter(keywords, subtitle_cfg)
-    dialogue_drawtext = build_dialogue_filter(dialogue_text, subtitle_cfg)
+    
+    # 构建双语字幕滤镜
+    original_filter = build_original_text_filter(dialogue_text, subtitle_cfg)
+    
+    # 根据是否有译文决定如何构建译文滤镜
+    if translated_text:
+        translation_filter = build_translation_text_filter(translated_text, subtitle_cfg)
+    else:
+        # 如果没有译文，根据显示模式决定是否显示原文
+        # 如果显示模式是 translation_only，则不显示任何字幕
+        display_mode = subtitle_cfg.get("dialogue_display_mode", "both")
+        if display_mode == "translation_only":
+            original_filter = ""
+        # 否则使用旧的单语字幕滤镜作为回退
+        translation_filter = ""
+        # 如果原文滤镜为空，则使用旧的字幕滤镜
+        if not original_filter:
+            original_filter = build_dialogue_filter(dialogue_text, subtitle_cfg)
+    
     logo_drawtext = build_logo_filter(subtitle_cfg)
     logo_image_path = resolve_logo_image_path(subtitle_cfg)
 
@@ -273,8 +605,10 @@ def export_scene_with_keywords(
     filters = []
     if drawtext:
         filters.append(drawtext)
-    if dialogue_drawtext:
-        filters.append(dialogue_drawtext)
+    if original_filter:
+        filters.append(original_filter)
+    if translation_filter:
+        filters.append(translation_filter)
 
     if logo_image_path:
         cmd += ["-i", logo_image_path]
@@ -289,21 +623,117 @@ def export_scene_with_keywords(
 
         logo_margin = int(subtitle_cfg.get("logo_margin", subtitle_cfg.get("margin", 20)))
         overlay_pos = resolve_overlay_position(logo_position, logo_margin)
-
-        if filters:
-            filter_complex = (
-                f"[0:v]{','.join(filters)}[base];"
-                f"[1:v]scale={logo_scale_expr}[logo];"
-                f"[base][logo]overlay={overlay_pos}[v]"
-            )
+        
+        # 处理logo动画
+        logo_animation = subtitle_cfg.get("logo_animation", "none")
+        duration = end - start
+        
+        # 初始化filter_complex变量
+        filter_complex = None
+        
+        if logo_animation == "slide_right" and duration > 0:
+            # 从静态位置提取y表达式
+            if ":" in overlay_pos:
+                y_expr = overlay_pos.split(":", 1)[1]
+            else:
+                y_expr = "0"
+            # 构建动态x表达式：从左侧外部移动到右侧外部
+            # x = -w + t*(W + w)/duration
+            overlay_expr = f"x='-w + t*(W + w)/{duration}':y={y_expr}"
+            
+            if filters:
+                filter_complex = (
+                    f"[0:v]{','.join(filters)}[base];"
+                    f"[1:v]scale={logo_scale_expr}[logo];"
+                    f"[base][logo]overlay={overlay_expr}[v]"
+                )
+            else:
+                filter_complex = (
+                    f"[1:v]scale={logo_scale_expr}[logo];"
+                    f"[0:v][logo]overlay={overlay_expr}[v]"
+                )
+                
+        elif logo_animation == "slide_left" and duration > 0:
+            # 从右侧外部移动到左侧外部
+            if ":" in overlay_pos:
+                y_expr = overlay_pos.split(":", 1)[1]
+            else:
+                y_expr = "0"
+            overlay_expr = f"x='W - t*(W + w)/{duration}':y={y_expr}"
+            
+            if filters:
+                filter_complex = (
+                    f"[0:v]{','.join(filters)}[base];"
+                    f"[1:v]scale={logo_scale_expr}[logo];"
+                    f"[base][logo]overlay={overlay_expr}[v]"
+                )
+            else:
+                filter_complex = (
+                    f"[1:v]scale={logo_scale_expr}[logo];"
+                    f"[0:v][logo]overlay={overlay_expr}[v]"
+                )
+                
+        elif logo_animation == "bounce_right" and duration > 0:
+            # 双Logo模式：静态Logo + 动态往复Logo
+            # 获取动画速度参数（默认为2.0）
+            animation_speed = float(subtitle_cfg.get("logo_animation_speed", 2.0))
+            
+            # 解析静态位置
+            static_x_expr, static_y_expr = parse_overlay_position(overlay_pos)
+            
+            # 静态Logo缩放表达式（原始大小）
+            static_scale_expr = logo_scale_expr
+            
+            # 动态Logo缩放表达式（缩小50%）
+            # 计算缩小50%后的缩放参数
+            if logo_scale > 0:
+                dynamic_scale = logo_scale * 0.5
+                dynamic_max_width = logo_max_width // 2 if logo_max_width > 0 else 0
+                dynamic_scale_expr = f"'min(iw*{dynamic_scale},{dynamic_max_width})':-1"
+            else:
+                dynamic_width = logo_width // 2 if logo_width > 0 else 0
+                dynamic_scale_expr = f"{dynamic_width}:-1"
+            
+            # 构建滤镜图
+            if filters:
+                filter_complex = (
+                    f"[0:v]{','.join(filters)}[base];"
+                    f"[1:v]scale={static_scale_expr}[static_logo];"
+                    f"[1:v]scale={dynamic_scale_expr}[dynamic_logo];"
+                    f"[base][static_logo]overlay={overlay_pos}[base_with_static];"
+                    f"[base_with_static][dynamic_logo]overlay="
+                    f"x='{static_x_expr}+2*w + abs(mod(t*{animation_speed}*(W+w)/{duration}, 2*(W-{static_x_expr}-3*w)) - (W-{static_x_expr}-3*w))':"
+                    f"y={static_y_expr}[v]"
+                )
+            else:
+                filter_complex = (
+                    f"[1:v]scale={static_scale_expr}[static_logo];"
+                    f"[1:v]scale={dynamic_scale_expr}[dynamic_logo];"
+                    f"[0:v][static_logo]overlay={overlay_pos}[base_with_static];"
+                    f"[base_with_static][dynamic_logo]overlay="
+                    f"x='{static_x_expr}+2*w + abs(mod(t*{animation_speed}*(W+w)/{duration}, 2*(W-{static_x_expr}-3*w)) - (W-{static_x_expr}-3*w))':"
+                    f"y={static_y_expr}[v]"
+                )
+                
         else:
-            filter_complex = (
-                f"[1:v]scale={logo_scale_expr}[logo];"
-                f"[0:v][logo]overlay={overlay_pos}[v]"
-            )
+            # 无动画或未知动画类型，使用静态位置
+            overlay_expr = overlay_pos
+            
+            if filters:
+                filter_complex = (
+                    f"[0:v]{','.join(filters)}[base];"
+                    f"[1:v]scale={logo_scale_expr}[logo];"
+                    f"[base][logo]overlay={overlay_expr}[v]"
+                )
+            else:
+                filter_complex = (
+                    f"[1:v]scale={logo_scale_expr}[logo];"
+                    f"[0:v][logo]overlay={overlay_expr}[v]"
+                )
 
-
-        cmd += ["-filter_complex", filter_complex, "-map", "[v]", "-map", "0:a?"]
+        # 如果构建了filter_complex，添加到命令
+        if filter_complex:
+            cmd += ["-filter_complex", filter_complex, "-map", "[v]", "-map", "0:a?"]
     else:
         if logo_drawtext:
             filters.append(logo_drawtext)

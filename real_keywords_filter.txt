@@ -1,0 +1,8 @@
+drawtext=fontfile='C\:\\\\Windows\\\\Fonts\\\\meiryo.ttc':text='預かる（アズカッ）
+隠れる（カクレ）
+使う（ツカウ）
+押す（オス）
+やる（ヤル）
+おく（オイ）
+おける（オケ）
+れる（レル）':fontcolor=white:fontsize=20:box=1:boxcolor=black@0.45:boxborderw=10:line_spacing=6:x=20:y=100
