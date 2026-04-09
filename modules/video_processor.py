@@ -230,6 +230,7 @@ def build_drawtext_filter(keywords: List[str], subtitle_cfg: Dict[str, Any]) -> 
     # 获取字体颜色，优先使用关键词专用颜色配置
     font_color = subtitle_cfg.get("keywords_font_color", subtitle_cfg.get("font_color", "white"))
     font_size = subtitle_cfg.get("font_size", 36)
+    font_weight = subtitle_cfg.get("keywords_font_weight", subtitle_cfg.get("font_weight", "normal"))
     box_color = subtitle_cfg.get("box_color", "black")
     box_opacity = subtitle_cfg.get("box_opacity", 0.45)
     line_spacing = subtitle_cfg.get("line_spacing", 6)
@@ -383,6 +384,7 @@ def build_dialogue_filter(dialogue_text: str, subtitle_cfg: Dict[str, Any]) -> s
 
     font_color = subtitle_cfg.get("dialogue_font_color", subtitle_cfg.get("font_color", "white"))
     font_size = subtitle_cfg.get("dialogue_font_size", subtitle_cfg.get("font_size", 24))
+    font_weight = subtitle_cfg.get("dialogue_font_weight", subtitle_cfg.get("font_weight", "normal"))
     box_color = subtitle_cfg.get("dialogue_box_color", subtitle_cfg.get("box_color", "black"))
     box_opacity = subtitle_cfg.get("dialogue_box_opacity", subtitle_cfg.get("box_opacity", 0.45))
     line_spacing = subtitle_cfg.get("dialogue_line_spacing", subtitle_cfg.get("line_spacing", 6))
@@ -476,6 +478,7 @@ def build_original_text_filter(original_text: str, subtitle_cfg: Dict[str, Any])
     # 样式配置
     font_color = subtitle_cfg.get("dialogue_font_color", subtitle_cfg.get("font_color", "white"))
     font_size = subtitle_cfg.get("dialogue_font_size", subtitle_cfg.get("font_size", 24))
+    font_weight = subtitle_cfg.get("dialogue_font_weight", subtitle_cfg.get("font_weight", "normal"))
     box_color = subtitle_cfg.get("dialogue_box_color", subtitle_cfg.get("box_color", "black"))
     box_opacity = subtitle_cfg.get("dialogue_box_opacity", subtitle_cfg.get("box_opacity", 0.45))
     line_spacing = subtitle_cfg.get("dialogue_line_spacing", subtitle_cfg.get("line_spacing", 6))
@@ -523,6 +526,7 @@ def build_translation_text_filter(translation_text: str, subtitle_cfg: Dict[str,
     # 样式配置
     font_color = subtitle_cfg.get("dialogue_font_color", subtitle_cfg.get("font_color", "white"))
     font_size = subtitle_cfg.get("dialogue_font_size", subtitle_cfg.get("font_size", 24))
+    font_weight = subtitle_cfg.get("dialogue_font_weight", subtitle_cfg.get("font_weight", "normal"))
     box_color = subtitle_cfg.get("dialogue_box_color", subtitle_cfg.get("box_color", "black"))
     box_opacity = subtitle_cfg.get("dialogue_box_opacity", subtitle_cfg.get("box_opacity", 0.45))
     line_spacing = subtitle_cfg.get("dialogue_line_spacing", subtitle_cfg.get("line_spacing", 6))
@@ -679,8 +683,10 @@ def export_scene_with_keywords(
         logo_scale = float(subtitle_cfg.get("logo_scale", 0))
         logo_width = int(subtitle_cfg.get("logo_width", 180))
         logo_max_width = int(subtitle_cfg.get("logo_max_width", 220))
+        # 格式化logo_scale，避免浮点数末尾的.0导致解析问题
+        logo_scale_str = str(int(logo_scale)) if logo_scale.is_integer() else str(logo_scale)
         if logo_scale > 0:
-            logo_scale_expr = f"'min(iw*{logo_scale},{logo_max_width})':-1"
+            logo_scale_expr = f"'min(iw*{logo_scale_str},{logo_max_width})':-1"
         else:
             logo_scale_expr = f"{logo_width}:-1"
         logo_position = subtitle_cfg.get("logo_position", "top_left")
@@ -691,6 +697,8 @@ def export_scene_with_keywords(
         # 处理logo动画
         logo_animation = subtitle_cfg.get("logo_animation", "none")
         duration = end - start
+        # 格式化持续时间，避免浮点数末尾的.0导致解析问题
+        duration_str = str(int(duration)) if duration.is_integer() else str(duration)
         
         # 初始化filter_complex变量
         filter_complex = None
@@ -703,7 +711,7 @@ def export_scene_with_keywords(
                 y_expr = "0"
             # 构建动态x表达式：从左侧外部移动到右侧外部
             # x = -w + t*(W + w)/duration
-            overlay_expr = f"x='-w + t*(W + w)/{duration}':y={y_expr}"
+            overlay_expr = f"x='-w + t*(W + w)/{duration_str}':y={y_expr}"
             
             if filters:
                 filter_complex = (
@@ -723,7 +731,7 @@ def export_scene_with_keywords(
                 y_expr = overlay_pos.split(":", 1)[1]
             else:
                 y_expr = "0"
-            overlay_expr = f"x='W - t*(W + w)/{duration}':y={y_expr}"
+            overlay_expr = f"x='W - t*(W + w)/{duration_str}':y={y_expr}"
             
             if filters:
                 filter_complex = (
@@ -741,6 +749,7 @@ def export_scene_with_keywords(
             # 双Logo模式：静态Logo + 动态往复Logo
             # 获取动画速度参数（默认为2.0）
             animation_speed = float(subtitle_cfg.get("logo_animation_speed", 2.0))
+            animation_speed_str = str(int(animation_speed)) if animation_speed.is_integer() else str(animation_speed)
             
             # 解析静态位置
             static_x_expr, static_y_expr = parse_overlay_position(overlay_pos)
@@ -752,8 +761,9 @@ def export_scene_with_keywords(
             # 计算缩小50%后的缩放参数
             if logo_scale > 0:
                 dynamic_scale = logo_scale * 0.5
+                dynamic_scale_str = str(int(dynamic_scale)) if dynamic_scale.is_integer() else str(dynamic_scale)
                 dynamic_max_width = logo_max_width // 2 if logo_max_width > 0 else 0
-                dynamic_scale_expr = f"'min(iw*{dynamic_scale},{dynamic_max_width})':-1"
+                dynamic_scale_expr = f"'min(iw*{dynamic_scale_str},{dynamic_max_width})':-1"
             else:
                 dynamic_width = logo_width // 2 if logo_width > 0 else 0
                 dynamic_scale_expr = f"{dynamic_width}:-1"
@@ -764,19 +774,19 @@ def export_scene_with_keywords(
                     f"[0:v]{','.join(filters)}[base];"
                     f"[1:v]scale={static_scale_expr}[static_logo];"
                     f"[1:v]scale={dynamic_scale_expr}[dynamic_logo];"
-                    f"[base][static_logo]overlay={overlay_pos}[base_with_static];"
-                    f"[base_with_static][dynamic_logo]overlay="
-                    f"x='{static_x_expr}+2*w + abs(mod(t*{animation_speed}*(W+w)/{duration}, 2*(W-{static_x_expr}-3*w)) - (W-{static_x_expr}-3*w))':"
-                    f"y={static_y_expr}[v]"
+f"[base][static_logo]overlay={overlay_pos}[base_with_static];"
+f"[base_with_static][dynamic_logo]overlay="
+f"x='{static_x_expr}+2*w + abs(mod(t*{animation_speed_str}*(W+w)/{duration_str}, 2*(W-{static_x_expr}-3*w)) - (W-{static_x_expr}-3*w))':"
+f"y={static_y_expr}[v]"
                 )
             else:
                 filter_complex = (
                     f"[1:v]scale={static_scale_expr}[static_logo];"
                     f"[1:v]scale={dynamic_scale_expr}[dynamic_logo];"
-                    f"[0:v][static_logo]overlay={overlay_pos}[base_with_static];"
-                    f"[base_with_static][dynamic_logo]overlay="
-                    f"x='{static_x_expr}+2*w + abs(mod(t*{animation_speed}*(W+w)/{duration}, 2*(W-{static_x_expr}-3*w)) - (W-{static_x_expr}-3*w))':"
-                    f"y={static_y_expr}[v]"
+f"[0:v][static_logo]overlay={overlay_pos}[base_with_static];"
+f"[base_with_static][dynamic_logo]overlay="
+f"x='{static_x_expr}+2*w + abs(mod(t*{animation_speed_str}*(W+w)/{duration_str}, 2*(W-{static_x_expr}-3*w)) - (W-{static_x_expr}-3*w))':"
+f"y={static_y_expr}[v]"
                 )
                 
         else:
@@ -806,6 +816,7 @@ def export_scene_with_keywords(
 
     cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k", output_path]
 
+    logger.debug(f"FFmpeg command: {cmd}")
     run_ffmpeg(cmd)
 
 
@@ -834,6 +845,7 @@ def build_timed_original_filter(segment_text: str, start_time: float, end_time: 
     # 样式配置
     font_color = subtitle_cfg.get("dialogue_font_color", subtitle_cfg.get("font_color", "white"))
     font_size = subtitle_cfg.get("dialogue_font_size", subtitle_cfg.get("font_size", 24))
+    font_weight = subtitle_cfg.get("dialogue_font_weight", subtitle_cfg.get("font_weight", "normal"))
     box_color = subtitle_cfg.get("dialogue_box_color", subtitle_cfg.get("box_color", "black"))
     box_opacity = subtitle_cfg.get("dialogue_box_opacity", subtitle_cfg.get("box_opacity", 0.45))
     line_spacing = subtitle_cfg.get("dialogue_line_spacing", subtitle_cfg.get("line_spacing", 6))
@@ -886,6 +898,7 @@ def build_timed_translation_filter(segment_text: str, start_time: float, end_tim
     # 样式配置
     font_color = subtitle_cfg.get("dialogue_font_color", subtitle_cfg.get("font_color", "white"))
     font_size = subtitle_cfg.get("dialogue_font_size", subtitle_cfg.get("font_size", 24))
+    font_weight = subtitle_cfg.get("dialogue_font_weight", subtitle_cfg.get("font_weight", "normal"))
     box_color = subtitle_cfg.get("dialogue_box_color", subtitle_cfg.get("box_color", "black"))
     box_opacity = subtitle_cfg.get("dialogue_box_opacity", subtitle_cfg.get("box_opacity", 0.45))
     line_spacing = subtitle_cfg.get("dialogue_line_spacing", subtitle_cfg.get("line_spacing", 6))

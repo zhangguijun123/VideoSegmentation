@@ -27,6 +27,7 @@ subtitle:
   position: "top_right"
   font_size: 20
   font_color: "white"
+  font_weight: "normal"  # normal | bold
   box_color: "black"
   box_opacity: 0.45
   margin: 20
@@ -35,6 +36,7 @@ subtitle:
   dialogue_position: "bottom_center"
   dialogue_font_size: 24
   dialogue_font_color: "white"
+  dialogue_font_weight: "bold"  # normal | bold
   dialogue_box_color: "black"
   dialogue_box_opacity: 0.45
   dialogue_margin: 28
@@ -47,10 +49,11 @@ subtitle:
   keywords_position: "left_vertical"  # left_vertical | top_right | bottom_left | none
   keywords_max_display: 10
   keywords_box_enabled: false  # true = 显示背景框，false = 透明背景（无框）
-  keywords_font_color: "gold"  # 关键词字体颜色
+  keywords_font_color: "yellow"  # 关键词字体颜色 yellow、gold、cyan、orange、red
+  keywords_font_weight: "bold"  # normal | bold
   keywords_font_outline_enabled: true  # 是否启用字体描边（透明背景时）
-  keywords_font_outline_color: "black@0.8"  # 描边颜色
-  keywords_font_outline_width: 2  # 描边宽度（像素）
+  keywords_font_outline_color: "black@1.0"  # 描边颜色（全不透明度，更显眼）
+  keywords_font_outline_width: 5  # 描边宽度（像素），增大以模拟加粗效果
   keywords_font_shadow_enabled: true  # 是否启用阴影效果
   keywords_font_shadow_x: 2  # 阴影X偏移
   keywords_font_shadow_y: 2  # 阴影Y偏移
