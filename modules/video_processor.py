@@ -1,4 +1,6 @@
 import os
+import subprocess
+import json
 from typing import List, Dict, Any, Optional
 
 from utils.logger import get_logger
@@ -15,15 +17,75 @@ def escape_drawtext(text: str) -> str:
     )
 
 
+def escape_drawtext_for_filter_complex(text: str) -> str:
+    """
+    专门为 -filter_complex 模式的 drawtext 转义文本。
+    
+    与 escape_drawtext() 的关键区别：
+    - filter_complex 中的 drawtext text 参数通常用单引号包裹
+    - FFmpeg 的单引号字符串解析器不支持 \\' 转义
+    - 因此必须将单引号替换为 Unicode 右单引号（U+2019），避免破坏语法
+    
+    同时保留 : 和 % 的转义，以及 \\ 的转义。
+    """
+    return (
+        text.replace("\\", "\\\\")
+        .replace(":", "\\:")
+        # 将 ASCII 单引号替换为 Unicode 右单引号，避免破坏 FFmpeg 单引号字符串语法
+        .replace("'", "\u2019")
+        .replace("%", "\\%")
+    )
+
+
 def escape_drawtext_keep_newlines(text: str) -> str:
-    # 先将换行符替换为特殊标记，避免被escape_drawtext处理
+    """
+    保留换行符的 drawtext 文本转义。
+    
+    使用 escape_drawtext_for_filter_complex() 替代原来的 escape_drawtext()，
+    因为 -filter_complex 模式下的单引号字符串不支持 \\' 转义，
+    必须将单引号替换为 Unicode 字符（U+2019）以避免破坏 FFmpeg 滤镜语法。
+    """
+    # 先将换行符替换为特殊标记，避免被转义处理
     placeholder = "___NEWLINE___"
     text = text.replace("\n", placeholder)
-    text = escape_drawtext(text)
+    # 使用安全的 filter_complex 版本转义（单引号 → Unicode 右单引号）
+    text = escape_drawtext_for_filter_complex(text)
     # 将标记替换为实际的换行字符（ASCII 10）
-    # 这样FFmpeg会直接接收换行符
     return text.replace(placeholder, "\n")
 
+
+def get_video_resolution(video_path: str) -> tuple[int, int]:
+    """
+    获取视频分辨率（宽度, 高度）
+    
+    Args:
+        video_path: 视频文件路径
+        
+    Returns:
+        (width, height) 元组
+    """
+    try:
+        cmd = [
+            "ffprobe",
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_streams",
+            "-select_streams", "v:0",
+            video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            return 1920, 1080  # 默认分辨率
+        
+        data = json.loads(result.stdout)
+        if data.get("streams") and len(data["streams"]) > 0:
+            stream = data["streams"][0]
+            width = stream.get("width", 1920)
+            height = stream.get("height", 1080)
+            return width, height
+        return 1920, 1080
+    except Exception:
+        return 1920, 1080  # 出错时返回默认分辨率
 
 
 def resolve_font_path(subtitle_cfg: Dict[str, Any]) -> str:
@@ -229,7 +291,8 @@ def build_drawtext_filter(keywords: List[str], subtitle_cfg: Dict[str, Any]) -> 
 
     # 获取字体颜色，优先使用关键词专用颜色配置
     font_color = subtitle_cfg.get("keywords_font_color", subtitle_cfg.get("font_color", "white"))
-    font_size = subtitle_cfg.get("font_size", 36)
+    # 获取字体大小，优先使用关键词专用字体大小配置
+    font_size = subtitle_cfg.get("keywords_font_size", subtitle_cfg.get("font_size", 36))
     font_weight = subtitle_cfg.get("keywords_font_weight", subtitle_cfg.get("font_weight", "normal"))
     box_color = subtitle_cfg.get("box_color", "black")
     box_opacity = subtitle_cfg.get("box_opacity", 0.45)
@@ -461,6 +524,10 @@ def build_original_text_filter(original_text: str, subtitle_cfg: Dict[str, Any])
     if not original_text:
         return ""
     
+    # 检查是否显示对话字幕
+    if not subtitle_cfg.get("show_dialogue", True):
+        return ""
+    
     # 根据显示模式决定是否显示原文
     display_mode = subtitle_cfg.get("dialogue_display_mode", "both")
     if display_mode not in ["both", "original_only"]:
@@ -507,6 +574,10 @@ def build_translation_text_filter(translation_text: str, subtitle_cfg: Dict[str,
     构建译文（中文）字幕滤镜
     """
     if not translation_text:
+        return ""
+    
+    # 检查是否显示对话字幕
+    if not subtitle_cfg.get("show_dialogue", True):
         return ""
     
     # 根据显示模式决定是否显示译文
@@ -580,6 +651,44 @@ def export_scene_with_keywords(
     """
     # 构建关键词滤镜
     logger = get_logger()
+    
+    # 获取视频分辨率并自适应缩放配置
+    video_width, video_height = get_video_resolution(input_path)
+    # 以1080p为基准（高度1080），计算缩放因子
+    scale_factor = video_height / 1080.0
+    
+    # 创建缩放后的配置副本
+    scaled_cfg = subtitle_cfg.copy()
+    
+    # 缩放字体相关尺寸
+    font_keys = [
+        "font_size", "dialogue_font_size", "logo_font_size", "keywords_font_size",
+        "keywords_font_outline_width", "keywords_font_shadow_x", "keywords_font_shadow_y"
+    ]
+    for key in font_keys:
+        if key in scaled_cfg and isinstance(scaled_cfg[key], (int, float)):
+            scaled_cfg[key] = int(round(scaled_cfg[key] * scale_factor))
+    
+    # 缩放边距相关尺寸
+    margin_keys = [
+        "margin", "dialogue_margin", "logo_margin",
+        "keywords_font_outline_width", "keywords_font_shadow_x", "keywords_font_shadow_y"
+    ]
+    for key in margin_keys:
+        if key in scaled_cfg and isinstance(scaled_cfg[key], (int, float)):
+            scaled_cfg[key] = int(round(scaled_cfg[key] * scale_factor))
+    
+    # 缩放logo相关尺寸（像素值部分）
+    if "logo_max_width" in scaled_cfg and isinstance(scaled_cfg["logo_max_width"], (int, float)):
+        scaled_cfg["logo_max_width"] = int(round(scaled_cfg["logo_max_width"] * scale_factor))
+    if "logo_width" in scaled_cfg and isinstance(scaled_cfg["logo_width"], (int, float)):
+        scaled_cfg["logo_width"] = int(round(scaled_cfg["logo_width"] * scale_factor))
+    
+    logger.debug(f"视频分辨率: {video_width}x{video_height}, 缩放因子: {scale_factor:.3f}")
+    
+    # 使用缩放后的配置替换原始配置
+    subtitle_cfg = scaled_cfg
+    
     drawtext = build_drawtext_filter(keywords, subtitle_cfg)
     
     filters = []
@@ -668,12 +777,15 @@ def export_scene_with_keywords(
     logo_drawtext = build_logo_filter(subtitle_cfg)
     logo_image_path = resolve_logo_image_path(subtitle_cfg)
 
+    # 格式化时间参数，避免浮点数表示误差
+    start_str = format(start, '.6f').rstrip('0').rstrip('.')
+    end_str = format(end, '.6f').rstrip('0').rstrip('.')
     cmd = [
         "-y",
         "-ss",
-        f"{start}",
+        start_str,
         "-to",
-        f"{end}",
+        end_str,
         "-i",
         input_path,
     ]
@@ -683,8 +795,12 @@ def export_scene_with_keywords(
         logo_scale = float(subtitle_cfg.get("logo_scale", 0))
         logo_width = int(subtitle_cfg.get("logo_width", 180))
         logo_max_width = int(subtitle_cfg.get("logo_max_width", 220))
-        # 格式化logo_scale，避免浮点数末尾的.0导致解析问题
-        logo_scale_str = str(int(logo_scale)) if logo_scale.is_integer() else str(logo_scale)
+        # 格式化logo_scale，避免浮点数表示误差和末尾的.0导致解析问题
+        if logo_scale.is_integer():
+            logo_scale_str = str(int(logo_scale))
+        else:
+            # 使用固定小数点格式，去除多余的尾随零
+            logo_scale_str = format(logo_scale, '.6f').rstrip('0').rstrip('.')
         if logo_scale > 0:
             logo_scale_expr = f"'min(iw*{logo_scale_str},{logo_max_width})':-1"
         else:
@@ -697,8 +813,12 @@ def export_scene_with_keywords(
         # 处理logo动画
         logo_animation = subtitle_cfg.get("logo_animation", "none")
         duration = end - start
-        # 格式化持续时间，避免浮点数末尾的.0导致解析问题
-        duration_str = str(int(duration)) if duration.is_integer() else str(duration)
+        # 格式化持续时间，避免浮点数表示误差和末尾的.0导致解析问题
+        if duration.is_integer():
+            duration_str = str(int(duration))
+        else:
+            # 使用固定小数点格式，去除多余的尾随零
+            duration_str = format(duration, '.6f').rstrip('0').rstrip('.')
         
         # 初始化filter_complex变量
         filter_complex = None
@@ -713,9 +833,12 @@ def export_scene_with_keywords(
             # x = -w + t*(W + w)/duration
             overlay_expr = f"x='-w + t*(W + w)/{duration_str}':y={y_expr}"
             
-            if filters:
+            # 过滤有效的滤镜元素（必须是字符串且非空）
+            valid_filters = [f.strip() for f in filters if isinstance(f, str) and f.strip()]
+            
+            if valid_filters:
                 filter_complex = (
-                    f"[0:v]{','.join(filters)}[base];"
+                    f"[0:v]{','.join(valid_filters)}[base];"
                     f"[1:v]scale={logo_scale_expr}[logo];"
                     f"[base][logo]overlay={overlay_expr}[v]"
                 )
@@ -733,9 +856,12 @@ def export_scene_with_keywords(
                 y_expr = "0"
             overlay_expr = f"x='W - t*(W + w)/{duration_str}':y={y_expr}"
             
-            if filters:
+            # 过滤有效的滤镜元素（必须是字符串且非空）
+            valid_filters = [f.strip() for f in filters if isinstance(f, str) and f.strip()]
+            
+            if valid_filters:
                 filter_complex = (
-                    f"[0:v]{','.join(filters)}[base];"
+                    f"[0:v]{','.join(valid_filters)}[base];"
                     f"[1:v]scale={logo_scale_expr}[logo];"
                     f"[base][logo]overlay={overlay_expr}[v]"
                 )
@@ -749,7 +875,11 @@ def export_scene_with_keywords(
             # 双Logo模式：静态Logo + 动态往复Logo
             # 获取动画速度参数（默认为2.0）
             animation_speed = float(subtitle_cfg.get("logo_animation_speed", 2.0))
-            animation_speed_str = str(int(animation_speed)) if animation_speed.is_integer() else str(animation_speed)
+            if animation_speed.is_integer():
+                animation_speed_str = str(int(animation_speed))
+            else:
+                # 使用固定小数点格式，去除多余的尾随零
+                animation_speed_str = format(animation_speed, '.6f').rstrip('0').rstrip('.')
             
             # 解析静态位置
             static_x_expr, static_y_expr = parse_overlay_position(overlay_pos)
@@ -761,7 +891,11 @@ def export_scene_with_keywords(
             # 计算缩小50%后的缩放参数
             if logo_scale > 0:
                 dynamic_scale = logo_scale * 0.5
-                dynamic_scale_str = str(int(dynamic_scale)) if dynamic_scale.is_integer() else str(dynamic_scale)
+                if dynamic_scale.is_integer():
+                    dynamic_scale_str = str(int(dynamic_scale))
+                else:
+                    # 使用固定小数点格式，去除多余的尾随零
+                    dynamic_scale_str = format(dynamic_scale, '.6f').rstrip('0').rstrip('.')
                 dynamic_max_width = logo_max_width // 2 if logo_max_width > 0 else 0
                 dynamic_scale_expr = f"'min(iw*{dynamic_scale_str},{dynamic_max_width})':-1"
             else:
@@ -769,9 +903,12 @@ def export_scene_with_keywords(
                 dynamic_scale_expr = f"{dynamic_width}:-1"
             
             # 构建滤镜图
-            if filters:
+            # 过滤有效的滤镜元素（必须是字符串且非空）
+            valid_filters = [f.strip() for f in filters if isinstance(f, str) and f.strip()]
+            
+            if valid_filters:
                 filter_complex = (
-                    f"[0:v]{','.join(filters)}[base];"
+                    f"[0:v]{','.join(valid_filters)}[base];"
                     f"[1:v]scale={static_scale_expr}[static_logo];"
                     f"[1:v]scale={dynamic_scale_expr}[dynamic_logo];"
 f"[base][static_logo]overlay={overlay_pos}[base_with_static];"
@@ -793,9 +930,12 @@ f"y={static_y_expr}[v]"
             # 无动画或未知动画类型，使用静态位置
             overlay_expr = overlay_pos
             
-            if filters:
+            # 过滤有效的滤镜元素（必须是字符串且非空）
+            valid_filters = [f.strip() for f in filters if isinstance(f, str) and f.strip()]
+            
+            if valid_filters:
                 filter_complex = (
-                    f"[0:v]{','.join(filters)}[base];"
+                    f"[0:v]{','.join(valid_filters)}[base];"
                     f"[1:v]scale={logo_scale_expr}[logo];"
                     f"[base][logo]overlay={overlay_expr}[v]"
                 )
@@ -812,7 +952,20 @@ f"y={static_y_expr}[v]"
         if logo_drawtext:
             filters.append(logo_drawtext)
         if filters:
-            cmd += ["-vf", ",".join(filters)]
+            # 过滤掉非字符串和空字符串的滤镜
+            valid_filters = []
+            for f in filters:
+                if isinstance(f, str) and f.strip():
+                    valid_filters.append(f.strip())
+                else:
+                    logger.warning(f"无效的滤镜元素被跳过: {repr(f)} (类型: {type(f).__name__})")
+            
+            if valid_filters:
+                logger.debug(f"有效的滤镜数量: {len(valid_filters)}")
+                logger.debug(f"滤镜列表: {valid_filters}")
+                cmd += ["-vf", ",".join(valid_filters)]
+            else:
+                logger.debug("没有有效的滤镜，跳过 -vf 参数")
 
     cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k", output_path]
 
@@ -826,6 +979,10 @@ def build_timed_original_filter(segment_text: str, start_time: float, end_time: 
     start_time和end_time是相对于场景开始的时间（秒）
     """
     if not segment_text:
+        return ""
+    
+    # 检查是否显示对话字幕
+    if not subtitle_cfg.get("show_dialogue", True):
         return ""
     
     # 根据显示模式决定是否显示原文
@@ -851,11 +1008,13 @@ def build_timed_original_filter(segment_text: str, start_time: float, end_time: 
     line_spacing = subtitle_cfg.get("dialogue_line_spacing", subtitle_cfg.get("line_spacing", 6))
     font_path = resolve_japanese_font_path(subtitle_cfg)  # 使用日文字体
     
-    # 获取位置
+# 获取位置
     original_pos, _ = resolve_bilingual_position(subtitle_cfg)
-    
-    # 构建enable表达式
-    enable_expr = f"enable='between(t,{start_time},{end_time})'"
+
+    # 构建enable表达式，格式化时间参数避免浮点数表示误差
+    start_time_str = format(start_time, '.6f').rstrip('0').rstrip('.')
+    end_time_str = format(end_time, '.6f').rstrip('0').rstrip('.')
+    enable_expr = f"enable='between(t,{start_time_str},{end_time_str})'"
     
     parts = [
         "drawtext=",
@@ -881,6 +1040,10 @@ def build_timed_translation_filter(segment_text: str, start_time: float, end_tim
     if not segment_text:
         return ""
     
+    # 检查是否显示对话字幕
+    if not subtitle_cfg.get("show_dialogue", True):
+        return ""
+    
     # 根据显示模式决定是否显示译文
     display_mode = subtitle_cfg.get("dialogue_display_mode", "both")
     if display_mode not in ["both", "translation_only"]:
@@ -904,11 +1067,13 @@ def build_timed_translation_filter(segment_text: str, start_time: float, end_tim
     line_spacing = subtitle_cfg.get("dialogue_line_spacing", subtitle_cfg.get("line_spacing", 6))
     font_path = resolve_chinese_font_path(subtitle_cfg)  # 使用中文字体
     
-    # 获取位置
+# 获取位置
     _, translation_pos = resolve_bilingual_position(subtitle_cfg)
-    
-    # 构建enable表达式
-    enable_expr = f"enable='between(t,{start_time},{end_time})'"
+
+    # 构建enable表达式，格式化时间参数避免浮点数表示误差
+    start_time_str = format(start_time, '.6f').rstrip('0').rstrip('.')
+    end_time_str = format(end_time, '.6f').rstrip('0').rstrip('.')
+    enable_expr = f"enable='between(t,{start_time_str},{end_time_str})'"
     
     parts = [
         "drawtext=",
