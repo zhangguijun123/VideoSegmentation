@@ -27,9 +27,12 @@ def extract_keywords(
     tokens = []
     display_map = {}
 
+    # 用户配置的词性列表，默认只提取动词
+    allowed_pos = parts_of_speech if parts_of_speech else ["動詞"]
+
     for token in tokenizer.tokenize(text):
         pos = token.part_of_speech.split(",")[0]
-        if pos != "動詞":
+        if pos not in allowed_pos:
             continue
 
         base = token.base_form

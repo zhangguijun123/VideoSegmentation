@@ -2,9 +2,10 @@
 
 ## 功能特性
 - 自动检测视频语音语言（日语/英语）
-- 语音识别（Whisper）并显示原文字幕
+- 语音识别（faster-whisper）并显示原文字幕
 - 自动翻译检测到的语言到中文（支持其他语言）
 - 双语字幕显示（原文在上，译文在下）
+- 分段翻译并与原文时间戳对齐，字幕稳定性更好
 - 多语言关键词提取（日语动词、英语名词/动词）
 - 场景自动分割
 - Logo动画叠加
@@ -30,9 +31,13 @@
 ### 语音识别
 ```yaml
 speech_recognition:
-  model: "base"           # Whisper模型大小 (tiny, base, small, medium, large)
-  language: "ja"          # 默认语言，设为 "auto" 以自动检测
-  auto_detect: true       # 是否自动检测语言
+  model: "large-v3"       # faster-whisper模型 (small, medium, large-v3 等)
+  language: "ja"          # 默认日语，可手动改为其它语言或 "auto"
+  device: "auto"          # auto | cpu | cuda
+  compute_type: "int8_float16"  # GPU推荐 int8_float16，CPU推荐 int8
+  beam_size: 5
+  vad_filter: true
+  progress_log_interval_sec: 15 # 识别阶段进度日志间隔（秒）
 ```
 
 ### 翻译功能
@@ -43,6 +48,8 @@ translation:
   show_original: true     # 是否显示原文
   translator: "googletrans" # 翻译引擎
   api_timeout: 10         # API超时时间
+  batch_size: 16          # 分段翻译批处理大小
+  use_cache: true         # 启用句子缓存，重复对白不重复请求
 ```
 
 ### 关键词提取
@@ -66,7 +73,7 @@ subtitle:
 ```
 
 ## 支持的语言
-- 语音识别：Whisper支持的所有语言
+- 语音识别：faster-whisper支持的所有语言
 - 翻译：Google翻译支持的所有语言
 - 关键词提取：日语、英语
 
@@ -77,11 +84,10 @@ subtitle:
 - `keywords/`：关键词JSON文件（包含语言和翻译信息）
 
 ## 高级用法
-### 仅处理日语视频（禁用自动检测）
+### 仅处理日语视频（固定语言）
 ```yaml
 speech_recognition:
   language: "ja"
-  auto_detect: false
 translation:
   enabled: false
 ```
@@ -102,7 +108,7 @@ subtitle:
 ## 注意事项
 1. 首次使用英语关键词提取时会自动下载nltk数据
 2. 翻译功能需要网络连接
-3. 建议使用GPU加速Whisper识别
+3. 建议使用GPU加速faster-whisper识别
 4. 字幕行数过多可能导致显示不全，请调整 `dialogue_max_lines` 和 `dialogue_max_chars_per_line`
 
 ## 示例命令

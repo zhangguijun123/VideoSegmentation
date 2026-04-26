@@ -1,6 +1,7 @@
 import os
 import subprocess
 import json
+import tempfile
 from typing import List, Dict, Any, Optional
 
 from utils.logger import get_logger
@@ -39,19 +40,19 @@ def escape_drawtext_for_filter_complex(text: str) -> str:
 
 def escape_drawtext_keep_newlines(text: str) -> str:
     """
-    保留换行符的 drawtext 文本转义。
+    保留换行符的 drawtext 文本转义（用于 filter_complex 模式）。
     
-    使用 escape_drawtext_for_filter_complex() 替代原来的 escape_drawtext()，
-    因为 -filter_complex 模式下的单引号字符串不支持 \\' 转义，
-    必须将单引号替换为 Unicode 字符（U+2019）以避免破坏 FFmpeg 滤镜语法。
+    关键处理：
+    1. 使用 escape_drawtext_for_filter_complex() 处理单引号（' → Unicode U+2019）
+    2. 将实际换行符替换为 \n 字面量，避免破坏 FFmpeg filter_complex 语法
     """
     # 先将换行符替换为特殊标记，避免被转义处理
     placeholder = "___NEWLINE___"
     text = text.replace("\n", placeholder)
     # 使用安全的 filter_complex 版本转义（单引号 → Unicode 右单引号）
     text = escape_drawtext_for_filter_complex(text)
-    # 将标记替换为实际的换行字符（ASCII 10）
-    return text.replace(placeholder, "\n")
+    # 将标记替换为 \n 字面量（FFmpeg drawtext 识别的换行格式）
+    return text.replace(placeholder, "\\n")
 
 
 def get_video_resolution(video_path: str) -> tuple[int, int]:
@@ -259,15 +260,33 @@ def resolve_overlay_position(position: str, margin: int) -> str:
 
 def parse_overlay_position(position_str: str) -> tuple[str, str]:
     """
-    解析overlay位置字符串，返回(x_expr, y_expr)元组
+    解析overlay位置字符串，返回(x_expr, y_expr)元组。
+    
+    输入格式可能是 "x_expr:y_expr" 或 "x=Xexpr:y=Yexpr"。
+    剥离 'x=' 和 'y=' 前缀后返回纯表达式。
     """
     if ":" in position_str:
-        x_expr, y_expr = position_str.split(":", 1)
-        return x_expr.strip(), y_expr.strip()
+        x_raw, y_raw = position_str.split(":", 1)
+        x_expr = x_raw.strip()
+        y_expr = y_raw.strip()
+        # 剥离可能的 'x=' / 'y=' 前缀
+        if x_expr.startswith("x="):
+            x_expr = x_expr[2:]
+        if y_expr.startswith("y="):
+            y_expr = y_expr[2:]
+        return x_expr, y_expr
     return "0", "0"
 
 
 def build_drawtext_filter(keywords: List[str], subtitle_cfg: Dict[str, Any]) -> str:
+    """
+    构建关键词列表的 drawtext 滤镜链。
+    
+    使用每行一个 drawtext 滤镜的方式（而非单个 drawtext 内嵌 \\n），
+    彻底避免 filter_complex_script 模式下换行符失效的问题。
+    
+    返回逗号分隔的多个 drawtext 滤镜字符串（用于 filter_complex 链式调用）。
+    """
     if not subtitle_cfg.get("show_keywords", True):
         return ""
 
@@ -282,26 +301,21 @@ def build_drawtext_filter(keywords: List[str], subtitle_cfg: Dict[str, Any]) -> 
     # 应用汉字优先级筛选和数量限制
     max_display = subtitle_cfg.get("keywords_max_display", 10)
     filtered_keywords = filter_keywords_by_kanji_priority(keywords, max_display)
-    
+
     if not filtered_keywords:
         return ""
 
-    text_raw = "\n".join(filtered_keywords)
-    text = escape_drawtext_keep_newlines(text_raw)
-
-    # 获取字体颜色，优先使用关键词专用颜色配置
+    # 获取样式参数
     font_color = subtitle_cfg.get("keywords_font_color", subtitle_cfg.get("font_color", "white"))
-    # 获取字体大小，优先使用关键词专用字体大小配置
     font_size = subtitle_cfg.get("keywords_font_size", subtitle_cfg.get("font_size", 36))
-    font_weight = subtitle_cfg.get("keywords_font_weight", subtitle_cfg.get("font_weight", "normal"))
     box_color = subtitle_cfg.get("box_color", "black")
     box_opacity = subtitle_cfg.get("box_opacity", 0.45)
     line_spacing = subtitle_cfg.get("line_spacing", 6)
-    font_path = resolve_font_path(subtitle_cfg)  # 使用通用字体路径，关键词用日文字体
-    position_expr = resolve_keywords_position(subtitle_cfg)
-    keywords_box_enabled = subtitle_cfg.get("keywords_box_enabled", False)  # 默认禁用背景框
-    
-    # 字体效果配置
+    font_path = resolve_japanese_font_path(subtitle_cfg)
+    base_position_expr = resolve_keywords_position(subtitle_cfg)
+    keywords_box_enabled = subtitle_cfg.get("keywords_box_enabled", False)
+
+    # 字体效果
     outline_enabled = subtitle_cfg.get("keywords_font_outline_enabled", True)
     outline_color = subtitle_cfg.get("keywords_font_outline_color", "black@0.8")
     outline_width = subtitle_cfg.get("keywords_font_outline_width", 2)
@@ -309,41 +323,42 @@ def build_drawtext_filter(keywords: List[str], subtitle_cfg: Dict[str, Any]) -> 
     shadow_x = subtitle_cfg.get("keywords_font_shadow_x", 2)
     shadow_y = subtitle_cfg.get("keywords_font_shadow_y", 2)
     shadow_color = subtitle_cfg.get("keywords_font_shadow_color", "black@0.6")
-    
-    # 如果位置表达式为空（例如配置为"none"），则不显示
-    if not position_expr:
+
+    if not base_position_expr:
         return ""
 
-    parts = [
-        "drawtext=",
-    ]
+    # 解析基础位置表达式，获取 x 和 y 坐标
+    x_expr, y_base_expr = parse_overlay_position(base_position_expr)
 
-    if font_path:
-        parts.append(f"fontfile='{escape_drawtext(font_path)}':")
+    # 为每行构建独立的 drawtext 滤镜
+    drawtext_filters = []
+    for idx, kw in enumerate(filtered_keywords):
+        text = escape_drawtext_for_filter_complex(kw)
+        # 计算当前行的 y 偏移：基础 y + 行号 * (字体大小 + 行间距)
+        y_offset = f"({y_base_expr})+{idx}*({font_size}+{line_spacing})"
 
-    # 构建滤镜参数
-    filter_parts = [
-        f"text='{text}':fontcolor={font_color}:fontsize={font_size}:"
-    ]
-    
-    if keywords_box_enabled:
-        # 启用背景框
-        filter_parts.append(f"box=1:boxcolor={box_color}@{box_opacity}:boxborderw=10:")
-    else:
-        # 透明背景，根据配置添加描边和阴影
-        filter_parts.append(f"box=0:")
-        
-        if outline_enabled:
-            filter_parts.append(f"bordercolor={outline_color}:borderw={outline_width}:")
-        
-        if shadow_enabled:
-            filter_parts.append(f"shadowx={shadow_x}:shadowy={shadow_y}:shadowcolor={shadow_color}:")
-    
-    filter_parts.append(f"line_spacing={line_spacing}:{position_expr}")
-    
-    parts.append("".join(filter_parts))
+        parts = ["drawtext="]
+        if font_path:
+            parts.append(f"fontfile='{escape_drawtext(font_path)}':")
 
-    return "".join(parts)
+        filter_parts = [f"text='{text}':fontcolor={font_color}:fontsize={font_size}:"]
+
+        if keywords_box_enabled:
+            filter_parts.append(f"box=1:boxcolor={box_color}@{box_opacity}:boxborderw=10:")
+        else:
+            filter_parts.append(f"box=0:")
+            if outline_enabled:
+                filter_parts.append(f"bordercolor={outline_color}:borderw={outline_width}:")
+            if shadow_enabled:
+                filter_parts.append(
+                    f"shadowx={shadow_x}:shadowy={shadow_y}:shadowcolor={shadow_color}:"
+                )
+
+        filter_parts.append(f"x={x_expr}:y={y_offset}")
+        parts.append("".join(filter_parts))
+        drawtext_filters.append("".join(parts))
+
+    return ",".join(drawtext_filters)
 
 
 def resolve_logo_font_path(subtitle_cfg: Dict[str, Any]) -> str:
@@ -383,6 +398,102 @@ def wrap_dialogue_text(text: str, max_chars_per_line: int, max_lines: int) -> st
     if max_lines > 0:
         lines = lines[:max_lines]
     return "\n".join(lines)
+
+
+def compact_subtitle_segments(
+    segments: Optional[List[Dict[str, Any]]],
+    scene_start: float,
+    scene_end: float,
+    min_duration: float = 0.4,
+    dedup_window_sec: float = 5.0,
+    max_segments: int = 30,
+) -> List[Dict[str, Any]]:
+    """
+    压缩分段字幕，防止异常碎片导致 filter_complex 过长。
+    - 丢弃文本为空或时长过短的片段
+    - 合并相邻且文本相同的片段
+    - 在时间窗口内去除重复文本刷屏
+    - 限制最大分段数量，超出时强制合并相邻短分段
+    """
+    if not segments:
+        return []
+
+    compacted: List[Dict[str, Any]] = []
+    last_text_end_by_text: Dict[str, float] = {}
+    scene_duration = max(0.0, float(scene_end) - float(scene_start))
+
+    for seg in segments:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+
+        seg_start = float(seg.get("start", scene_start))
+        seg_end = float(seg.get("end", seg_start))
+
+        rel_start = max(0.0, seg_start - float(scene_start))
+        rel_end = min(scene_duration, seg_end - float(scene_start))
+        if rel_end <= rel_start:
+            continue
+        if (rel_end - rel_start) < min_duration:
+            continue
+
+        last_end_same_text = last_text_end_by_text.get(text)
+        if last_end_same_text is not None and (rel_start - last_end_same_text) <= dedup_window_sec:
+            # 与最近一次相同文本在去重窗口内，跳过重复刷屏
+            continue
+
+        # 相邻相同文本合并且放宽合并阈值到 0.5 秒
+        if compacted and compacted[-1]["text"] == text and rel_start <= (compacted[-1]["end"] + 0.5):
+            compacted[-1]["end"] = max(compacted[-1]["end"], rel_end)
+        else:
+            compacted.append(
+                {
+                    "start": rel_start,
+                    "end": rel_end,
+                    "text": text,
+                }
+            )
+
+        # 记录该文本最后出现位置（用于跨间隔去重）
+        last_text_end_by_text[text] = rel_end
+
+    # 二次压缩：如果分段数仍超过上限，强制合并相邻短分段
+    if len(compacted) > max_segments and max_segments > 0:
+        compacted = _force_merge_segments(compacted, max_segments)
+
+    return compacted
+
+
+def _force_merge_segments(segments: List[Dict[str, Any]], target_count: int) -> List[Dict[str, Any]]:
+    """
+    强制合并相邻分段直到数量不超过目标值。
+    策略：优先合并时长最短的相邻对，合并时用换行连接文本。
+    """
+    if len(segments) <= target_count:
+        return segments
+
+    working = list(segments)
+
+    while len(working) > target_count:
+        # 找出时长最短的相邻对
+        best_idx = 0
+        best_duration = float("inf")
+        for i in range(len(working) - 1):
+            duration = working[i + 1]["end"] - working[i]["start"]
+            if duration < best_duration:
+                best_duration = duration
+                best_idx = i
+
+        # 合并这对相邻分段
+        merged_text = f"{working[best_idx]['text']}\n{working[best_idx + 1]['text']}"
+        working[best_idx] = {
+            "start": working[best_idx]["start"],
+            "end": working[best_idx + 1]["end"],
+            "text": merged_text,
+        }
+        working.pop(best_idx + 1)
+
+    return working
 
 
 
@@ -672,7 +783,8 @@ def export_scene_with_keywords(
     # 缩放边距相关尺寸
     margin_keys = [
         "margin", "dialogue_margin", "logo_margin",
-        "keywords_font_outline_width", "keywords_font_shadow_x", "keywords_font_shadow_y"
+        # 注意: keywords_font_outline_width/keywords_font_shadow_x/y 已在 font_keys 中处理，
+        # 不要重复添加到此处，否则会导致双重缩放
     ]
     for key in margin_keys:
         if key in scaled_cfg and isinstance(scaled_cfg[key], (int, float)):
@@ -701,29 +813,34 @@ def export_scene_with_keywords(
     logger.debug(f"分段模式启用: {use_segmented_mode}, 分段数量: {len(segments) if segments else 0}")
     
     if use_segmented_mode:
+        compacted_segments = compact_subtitle_segments(
+            segments=segments,
+            scene_start=start,
+            scene_end=end,
+        )
+        compacted_translated_segments = compact_subtitle_segments(
+            segments=translated_segments,
+            scene_start=start,
+            scene_end=end,
+        ) if translated_segments else []
+
+        logger.debug(
+            f"分段压缩完成: original {len(segments)} -> {len(compacted_segments)}, "
+            f"translated {len(translated_segments) if translated_segments else 0} -> {len(compacted_translated_segments)}"
+        )
+
         # 分段模式：为每个分段构建带时间控制的字幕滤镜
-        for i, seg in enumerate(segments):
-            seg_start = seg.get("start", 0)
-            seg_end = seg.get("end", 0)
+        for i, seg in enumerate(compacted_segments):
+            rel_start = float(seg.get("start", 0.0))
+            rel_end = float(seg.get("end", 0.0))
             seg_text = seg.get("text", "").strip()
             
             if not seg_text:
                 continue
-            
-            # 将绝对时间转换为相对于场景开始的时间
-            # 因为FFmpeg命令使用了-ss start，所以时间轴从0开始
-            rel_start = seg_start - start
-            rel_end = seg_end - start
-            
-            # 确保时间在场景范围内且有效
-            if rel_start < 0:
-                rel_start = 0
-            if rel_end > (end - start):
-                rel_end = end - start
             if rel_start >= rel_end:
                 continue
             
-            logger.debug(f"分段 {i}: 绝对时间 [{seg_start:.2f}-{seg_end:.2f}], 相对时间 [{rel_start:.2f}-{rel_end:.2f}], 文本: {seg_text[:50]}{'...' if len(seg_text) > 50 else ''}")
+            logger.debug(f"分段 {i}: 相对时间 [{rel_start:.2f}-{rel_end:.2f}], 文本: {seg_text[:50]}{'...' if len(seg_text) > 50 else ''}")
             
             # 构建原文字幕滤镜
             original_filter = build_timed_original_filter(seg_text, rel_start, rel_end, subtitle_cfg)
@@ -731,8 +848,8 @@ def export_scene_with_keywords(
                 filters.append(original_filter)
             
             # 构建译文字幕滤镜（如果有对应的译文分段）
-            if translated_segments and i < len(translated_segments):
-                trans_seg = translated_segments[i]
+            if compacted_translated_segments and i < len(compacted_translated_segments):
+                trans_seg = compacted_translated_segments[i]
                 trans_text = trans_seg.get("text", "").strip()
                 if trans_text:
                     # 使用相同的时间范围
@@ -946,8 +1063,22 @@ f"y={static_y_expr}[v]"
                 )
 
         # 如果构建了filter_complex，添加到命令
+        filter_complex_script_path = None
         if filter_complex:
-            cmd += ["-filter_complex", filter_complex, "-map", "[v]", "-map", "0:a?"]
+            if len(filter_complex) > 4000:
+                script_file = tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    suffix=".ffscript",
+                    delete=False,
+                )
+                with script_file:
+                    script_file.write(filter_complex)
+                filter_complex_script_path = script_file.name
+                logger.debug(f"filter_complex 过长，使用脚本文件: {filter_complex_script_path}")
+                cmd += ["-filter_complex_script", filter_complex_script_path, "-map", "[v]", "-map", "0:a?"]
+            else:
+                cmd += ["-filter_complex", filter_complex, "-map", "[v]", "-map", "0:a?"]
     else:
         if logo_drawtext:
             filters.append(logo_drawtext)
@@ -970,7 +1101,14 @@ f"y={static_y_expr}[v]"
     cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k", output_path]
 
     logger.debug(f"FFmpeg command: {cmd}")
-    run_ffmpeg(cmd)
+    try:
+        run_ffmpeg(cmd)
+    finally:
+        if 'filter_complex_script_path' in locals() and filter_complex_script_path:
+            try:
+                os.remove(filter_complex_script_path)
+            except OSError:
+                pass
 
 
 def build_timed_original_filter(segment_text: str, start_time: float, end_time: float, subtitle_cfg: Dict[str, Any]) -> str:

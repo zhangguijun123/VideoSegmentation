@@ -13,9 +13,19 @@ scene_detection:
   merge_min_length: 120.0  # 将短镜头合并到至少 30 秒，更接近完整对话段落
 
 speech_recognition:
-  model: "base"
+  model: "large-v3"
   language: "ja"
-  auto_detect: true
+  device: "auto"              # auto | cpu | cuda
+  compute_type: "int8_float16"  # 推荐GPU: int8_float16, CPU: int8
+  beam_size: 8
+  best_of: 8
+  patience: 1.2
+  temperature: 0.0
+  condition_on_previous_text: false
+  initial_prompt: "白い巨塔、浪速大学、浪速大学医学部附属病院、東教授、財前五郎、里見脩二、鵜飼教授、大河内教授、柳原弘、佃友弘、花森ケイ子、亀山君子、東佐枝子、又一、財前又一、船尾教授、菊川昇、関口弁護士、裁判長、医局長、第一内科、第一外科、食道噴門部癌"
+  vad_filter: true
+  vad_min_silence_duration_ms: 1500
+  progress_log_interval_sec: 15
 keywords:
   max_keywords_per_scene: 8
   parts_of_speech: ["動詞"]
@@ -23,7 +33,7 @@ keywords:
   stopwords_path: "data/stopwords_ja.txt"
 subtitle:
   show_keywords: true
-  show_dialogue: false
+  show_dialogue: true
   position: "top_right"
   font_size: 30
   font_color: "white"
@@ -67,19 +77,12 @@ subtitle:
   logo_max_width: 80
   logo_animation: "bounce_right"  # none | slide_right | slide_left | bounce_right
   logo_animation_speed: 2.0  # 动画速度倍数（仅对bounce_right有效）
-
-
-
-
-
   logo_position: "top_left"
   logo_font_size: 24
-
   logo_font_color: "white"
   logo_box_color: "black"
   logo_box_opacity: 0.45
   logo_margin: 10
-
   logo_font_path: ""
   logo_max_chars_per_line: 0
 
@@ -93,11 +96,13 @@ subtitle:
 
 
 translation:
-  enabled: true
+  enabled: false
   target_language: "zh-CN"
   show_original: true
   translator: "googletrans"
   api_timeout: 10
+  batch_size: 16
+  use_cache: true
 
 
 
